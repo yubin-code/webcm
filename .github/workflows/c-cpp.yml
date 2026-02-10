@@ -1,40 +1,38 @@
-name: Build WebCM
+name: Build and Upload WebCM
 
-# 触发条件：push 或 PR
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   pull_request:
 
 jobs:
   build:
-    # 使用 GitHub Actions 提供的 Ubuntu Runner
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ 检出代码
-      - name: Checkout repository
+      # 1️⃣ Checkout project
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Docker Buildx
-      - name: Set up Docker Buildx
+      # 2️⃣ Set up Docker buildx
+      - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v2
 
-      # 3️⃣ 构建用于编译的 Docker 镜像
+      # 3️⃣ Build the WebCM Docker builder image
       - name: Build Docker builder image
         run: |
           docker build \
             --platform=linux/amd64 \
             --tag webcm/builder \
             --file builder.Dockerfile \
-            --progress plain \
-            --security-opt seccomp=unconfined
+            --security-opt seccomp=unconfined \
+            --progress plain .
 
-      # 4️⃣ 调用 Makefile 构建项目
-      - name: Build WebCM
+      # 4️⃣ Run make to build WebCM
+      - name: Run make
         run: make
 
-      # 5️⃣ 上传构建产物（使用最新 v4）
+      # 5️⃣ Upload build files as artifacts (using v4!)
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
