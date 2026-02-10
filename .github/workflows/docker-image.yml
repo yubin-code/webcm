@@ -1,0 +1,65 @@
+name: Build and Deploy GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: .
+          destination: ./_site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+
+      # 这一段是为了生成 github-pages.zip
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-pages
+          path: _site
+
+  report-build-status:
+    name: report-build-status
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Report Pages build status
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/pages/telemetry" --input -
+
+  deploy:
+    name: deploy
+    needs: [build, report-build-status]
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: https://edubart.github.io/webcm/
+
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
