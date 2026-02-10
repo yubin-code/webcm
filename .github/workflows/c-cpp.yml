@@ -1,6 +1,5 @@
 name: Build WebCM
 
-# 触发条件：当你推送到 main 分支，或者在 Actions 页面手动点击 "Run workflow" 时触发
 on:
   push:
     branches: [ "main", "master" ]
@@ -11,38 +10,50 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      # 1. 拉取代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 安装 pigz (Makefile 中明确依赖 pigz 进行压缩，ubuntu-latest 默认不一定包含)
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pigz make
+          sudo apt-get install -y pigz make wget
 
-      # 3. 设置 QEMU
-      # 这是一个关键步骤！因为 Makefile 中 rootfs.tar 使用了 --platform=linux/riscv64
-      # 没有这一步，构建 RISC-V 架构的文件时会报错。
+      # ========================================================
+      # 【核心绝杀：避开 Git 协议，直接下载源码压缩包】
+      # 1. 既然 GitHub 连不上 adelielinux 的 Git
+      # 2. 我们从 Alpine 的官方 distfiles 下载 gcompat 的源码包
+      # 3. 将其解压并命名为 Docker 期望的目录名
+      # ========================================================
+      - name: Download gcompat source and patch Dockerfile
+        run: |
+          # 下载 gcompat v0.4.0 (这通常是你 Dockerfile 里 commit 对应的版本)
+          wget --user-agent="Mozilla/5.0" https://distfiles.adelielinux.org/source/gcompat/gcompat-0.4.0.tar.xz
+          mkdir -p gcompat
+          tar -xf gcompat-0.4.0.tar.xz -C gcompat --strip-components=1
+          
+          # 修改 Dockerfile：
+          # 把原来的 RUN git clone ... 这一行直接删掉
+          # 替换为 COPY gcompat ./gcompat
+          # 注意：这里的 sed 匹配模式要和你 Dockerfile 里的内容尽量对上
+          sed -i '/git clone.*gcompat.git/d' rootfs.Dockerfile
+          
+          # 在原来的位置插入 COPY 指令（这里假设在第 42 行附近）
+          # 我们直接在 Dockerfile 的 FROM 之后插入 COPY
+          sed -i '/FROM toolchain-stage AS gcompat-stage/a COPY gcompat ./gcompat' rootfs.Dockerfile
+          
+          echo "✅ Dockerfile 已经修改为本地注入模式，不再依赖网络下载 gcompat"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 4. 设置 Docker Buildx
-      # Makefile 中使用了 'docker buildx' 命令，需要初始化 Buildx 环境
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 5. 执行构建
-      # 直接调用 Makefile 的 gh-pages 目标，它会自动构建所有依赖 (webcm.mjs, rootfs, etc.)
-      # 并将结果整理到 gh-pages 文件夹中
       - name: Build Project
         run: make gh-pages
 
-      # 6. 上传构建产物
-      # 这就是你下载东西的地方。它会把 'gh-pages' 文件夹打包成一个 zip 供你下载。
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: webcm-build-files
           path: gh-pages/
-          compression-level: 6
