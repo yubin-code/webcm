@@ -2,57 +2,62 @@ name: Build and Deploy GitHub Pages
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
+    branches:
+      - main  # 任何 push 到 main 都会触发
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
-    name: build
     runs-on: ubuntu-latest
-
+    outputs:
+      artifact-id: ${{ steps.upload-artifact.outputs.artifact-id }}
     steps:
+      # 1️⃣ 获取代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ 构建 Jekyll 网站
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
           source: .
           destination: ./_site
 
+      # 3️⃣ 上传 Pages Artifact （供 deploy 使用）
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
 
-  report-build-status:
-    name: report-build-status
-    needs: build
-    runs-on: ubuntu-latest
+      # 4️⃣ 上传可下载的 artifact（普通 artifact，可直接下载）
+      - name: Upload build output (downloadable)
+        id: upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-build
+          path: _site
 
-    steps:
-      - name: Report Pages build status
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 5️⃣ 在 workflow summary 显示下载链接
+      - name: Show download link
         run: |
-          gh api -X POST "repos/$GITHUB_REPOSITORY/pages/telemetry" --input -
+          echo "### 📦 Build Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Site build: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >> $GITHUB_STEP_SUMMARY
+
+  report-build-status:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Report build status
+        run: |
+          echo "Reporting build status..."
+          # 这里可以调用 GitHub Pages Telemetry，如果你需要
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pages/telemetry" --input -
 
   deploy:
-    name: deploy
-    needs: report-build-status
     runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: https://edubart.github.io/webcm/
-
+    needs: build
     steps:
+      # 1️⃣ 部署到 GitHub Pages
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
