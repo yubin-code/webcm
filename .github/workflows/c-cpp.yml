@@ -1,43 +1,48 @@
-name: Build and Upload WebCM
+name: Build WebCM
 
+# 触发条件：当你推送到 main 分支，或者在 Actions 页面手动点击 "Run workflow" 时触发
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
-  build:
+  build-and-package:
     runs-on: ubuntu-latest
-
+    
     steps:
-      # 1️⃣ Checkout project
-      - name: Checkout code
-        uses: actions/checkout@v3
+      # 1. 拉取代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # 2️⃣ Set up Docker buildx
-      - name: Set up Docker buildx
-        uses: docker/setup-buildx-action@v2
-
-      # 3️⃣ Build the WebCM Docker builder image
-      - name: Build Docker builder image
+      # 2. 安装 pigz (Makefile 中明确依赖 pigz 进行压缩，ubuntu-latest 默认不一定包含)
+      - name: Install dependencies
         run: |
-          docker build \
-            --platform=linux/amd64 \
-            --tag webcm/builder \
-            --file builder.Dockerfile \
-            --security-opt seccomp=unconfined \
-            --progress plain .
+          sudo apt-get update
+          sudo apt-get install -y pigz make
 
-      # 4️⃣ Run make to build WebCM
-      - name: Run make
-        run: make
+      # 3. 设置 QEMU
+      # 这是一个关键步骤！因为 Makefile 中 rootfs.tar 使用了 --platform=linux/riscv64
+      # 没有这一步，构建 RISC-V 架构的文件时会报错。
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      # 5️⃣ Upload build files as artifacts (using v4!)
-      - name: Upload build artifacts
+      # 4. 设置 Docker Buildx
+      # Makefile 中使用了 'docker buildx' 命令，需要初始化 Buildx 环境
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 5. 执行构建
+      # 直接调用 Makefile 的 gh-pages 目标，它会自动构建所有依赖 (webcm.mjs, rootfs, etc.)
+      # 并将结果整理到 gh-pages 文件夹中
+      - name: Build Project
+        run: make gh-pages
+
+      # 6. 上传构建产物
+      # 这就是你下载东西的地方。它会把 'gh-pages' 文件夹打包成一个 zip 供你下载。
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: webcm-build
-          path: |
-            webcm.wasm
-            webcm.mjs
-            rootfs.ext2
+          name: webcm-build-files
+          path: gh-pages/
+          compression-level: 6
