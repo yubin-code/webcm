@@ -2,23 +2,154 @@ name: Build WebCM
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v3
-      - name: Build Docker builder image
-        run: docker build --tag webcm/builder --file builder.Dockerfile .
-      - name: Run make
-        run: make
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: 设置 QEMU (用于多平台支持)
+        uses: docker/setup-qemu-action@v3
         with:
-          name: webcm-build
+          platforms: linux/amd64,linux/riscv64
+      
+      - name: 创建缓存目录
+        run: |
+          mkdir -p .cache
+          mkdir -p .buildx-cache
+      
+      - name: 构建 Docker 构建器镜像
+        run: |
+          docker build --platform=linux/amd64 \
+            --tag webcm/builder \
+            --file builder.Dockerfile \
+            --progress plain .
+          touch .webcm-builder
+      
+      - name: 下载 emscripten-pty.js
+        run: |
+          docker run --platform=linux/amd64 \
+            --volume=.:/mnt \
+            --workdir=/mnt \
+            --user=$(id -u):$(id -g) \
+            --env=HOME=/tmp \
+            --rm webcm/builder \
+            wget -O emscripten-pty.js https://raw.githubusercontent.com/mame/xterm-pty/f284cab414d3e20f27a2f9298540b559878558db/emscripten-pty.js
+          touch emscripten-pty.js
+      
+      - name: 下载 linux.bin
+        run: |
+          docker run --platform=linux/amd64 \
+            --volume=.:/mnt \
+            --workdir=/mnt \
+            --user=$(id -u):$(id -g) \
+            --env=HOME=/tmp \
+            --rm webcm/builder \
+            wget -O linux.bin https://github.com/cartesi/machine-linux-image/releases/download/v0.20.0/linux-6.5.13-ctsi-1-v0.20.0.bin
+          touch linux.bin
+      
+      - name: 构建 rootfs.tar
+        run: |
+          docker buildx build \
+            --platform=linux/riscv64 \
+            --progress plain \
+            --cache-from type=local,src=.buildx-cache \
+            --cache-to type=local,dest=.buildx-cache,mode=max \
+            --output type=tar,dest=rootfs.tar \
+            --file rootfs.Dockerfile .
+      
+      - name: 构建 rootfs.ext2
+        run: |
+          docker run --platform=linux/amd64 \
+            --volume=.:/mnt \
+            --workdir=/mnt \
+            --user=$(id -u):$(id -g) \
+            --env=HOME=/tmp \
+            --rm webcm/builder \
+            xgenext2fs \
+              --faketime \
+              --allow-holes \
+              --size-in-blocks 98304 \
+              --block-size 4096 \
+              --bytes-per-inode 4096 \
+              --volume-label rootfs \
+              --tarball rootfs.tar rootfs.ext2
+      
+      - name: 压缩 rootfs.ext2
+        run: |
+          docker run --platform=linux/amd64 \
+            --volume=.:/mnt \
+            --workdir=/mnt \
+            --user=$(id -u):$(id -g) \
+            --env=HOME=/tmp \
+            --rm webcm/builder \
+            sh -c "cat rootfs.ext2 | pigz -cz -11 > rootfs.ext2.zz"
+      
+      - name: 压缩 linux.bin
+        run: |
+          docker run --platform=linux/amd64 \
+            --volume=.:/mnt \
+            --workdir=/mnt \
+            --user=$(id -u):$(id -g) \
+            --env=HOME=/tmp \
+            --rm webcm/builder \
+            sh -c "cat linux.bin | pigz -cz -11 > linux.bin.zz"
+      
+      - name: 编译 WebAssembly
+        run: |
+          docker run --platform=linux/amd64 \
+            --volume=.:/mnt \
+            --workdir=/mnt \
+            --user=$(id -u):$(id -g) \
+            --env=HOME=/tmp \
+            --env=EM_CACHE=/mnt/.cache \
+            --env=PIGZ_LEVEL=11 \
+            --rm webcm/builder \
+            em++ webcm.cpp -o webcm.mjs \
+              -Oz -g0 -std=gnu++23 \
+              -I/opt/emscripten-cartesi-machine/include \
+              -L/opt/emscripten-cartesi-machine/lib \
+              -lcartesi \
+              --js-library=emscripten-pty.js \
+              -Wall -Wextra -Wno-unused-function -Wno-c23-extensions \
+              -sASYNCIFY \
+              -sFETCH \
+              -sSTACK_SIZE=4MB \
+              -sTOTAL_MEMORY=768MB \
+              -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8
+      
+      - name: 复制文件到 gh-pages 目录
+        run: |
+          mkdir -p gh-pages
+          cp index.html webcm.mjs webcm.wasm favicon.svg gh-pages/ || true
+      
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: webcm-build-artifacts
           path: |
-            webcm.wasm
             webcm.mjs
+            webcm.wasm
             rootfs.ext2
+            rootfs.ext2.zz
+            linux.bin
+            linux.bin.zz
+            gh-pages/
+          retention-days: 30
+      
+      - name: 显示构建文件信息
+        run: |
+          echo "=== 构建完成 ==="
+          ls -lh webcm.mjs webcm.wasm rootfs.ext2.zz linux.bin.zz 2>/dev/null || true
+          echo ""
+          echo "构建产物已上传,可以在 Actions 页面的 Artifacts 部分下载"
