@@ -1,4 +1,4 @@
-name: Build and Deploy GitHub Pages
+name: Build, Package & Deploy webcm + Pages
 
 on:
   push:
@@ -9,50 +9,96 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  actions: read  # 这样 GH CLI 也能正确访问 artifact
+  actions: read
 
 concurrency:
-  group: pages
+  group: webcm-pages
   cancel-in-progress: true
 
 jobs:
-  build:
+
+  build-webcm:
+    name: Build webcm (WASM + JS)
     runs-on: ubuntu-latest
+    outputs:
+      artifact-url: ${{ steps.artifact.outputs.artifact-url }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # build Jekyll 内容
+      # 使用 Docker 来构建 wasm 和 rootfs
+      - name: Build webcm via Makefile
+        run: |
+          docker build --platform=linux/amd64 --tag webcm/builder -f builder.Dockerfile .
+          docker run --platform=linux/amd64 --rm \
+            -v "${{ github.workspace }}:/mnt" \
+            -w /mnt webcm/builder make webcm.mjs
+      # webcm.mjs + webcm.wasm 会在仓库根生成
+
+      # 上传 build 产物 (供下载)
+      - name: Upload webcm build
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webcm-build
+          path: |
+            webcm.wasm
+            webcm.mjs
+
+  build-pages:
+    name: Build static site and include webcm binaries
+    runs-on: ubuntu-latest
+    needs: build-webcm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 下载 webcm build artifact
+      - name: Download webcm build
+        uses: actions/download-artifact@v3
+        with:
+          name: webcm-build
+          path: webcm_dist
+
+      # 把 webcm 构建结果放到 Pages 目录
+      - name: Copy webcm build into site
+        run: |
+          mkdir -p ./_site/webcm
+          cp webcm_dist/webcm.wasm ./_site/webcm/
+          cp webcm_dist/webcm.mjs ./_site/webcm/
+
+      # 编译 Jekyll Pages
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
           source: .
           destination: ./_site
 
-      # 上传用于 Pages 的 artifact
+      # 上传 Pages artifact
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
 
-      # 上传可下载的 artifact，并输出下载链接
-      - name: Upload build output (downloadable)
-        id: upload-artifact
+      # 上传可下载 artifact
+      - name: Upload site with webcm
+        id: site_artifact
         uses: actions/upload-artifact@v4
         with:
-          name: site-build
+          name: pages-site-build
           path: _site
 
-      # 输出下载链接到 workflow summary
-      - name: Print Artifact Download URL
+      # 输出 artifact 下载链接
+      - name: Print artifact download link
         run: |
-          echo "### 📦 Build Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- 👉 **Download site-build artifact:**" >> $GITHUB_STEP_SUMMARY
-          echo "  ${{ steps.upload-artifact.outputs.artifact-url }}" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Build complete — Download artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- WebCM build: ${{ needs.build-webcm.outputs.artifact-url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pages site: ${{ steps.site_artifact.outputs.artifact-url }}" >> $GITHUB_STEP_SUMMARY
 
   deploy:
-    needs: build
+    name: Deploy to GitHub Pages
     runs-on: ubuntu-latest
+    needs: build-pages
     environment:
       name: github-pages
       url: https://edubart.github.io/webcm/
